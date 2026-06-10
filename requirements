@@ -1,3 +1,4 @@
-streamlit>=1.28.0
-langchain>=0.1.0
-langchain-openai>=1.0.1   # 旧版本号 0.0.5 对 Python 3.14 的支持可能有问题
+streamlit==1.28.1
+langchain==0.1.0
+langchain-openai==0.0.5
+langchain-core==0.1.0

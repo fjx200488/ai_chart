@@ -166,3 +166,4 @@ if user_input:
                 st.info("请检查API Key是否正确，或稍后重试。")
 
 #  终端运行：streamlit run "D:\Pythonstudy\AI助手\AI2\app.py"
+# api接口密钥:sk-2c59e8a281254109b8415c7c3420b054

@@ -1,42 +1,19 @@
 import streamlit as st
-from langchain_openai import ChatOpenAI
-from typing import Dict, Any
 import re
+from openai import OpenAI
 
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.output_parsers import BaseOutputParser
-
-from langchain_core.runnables import RunnablePassthrough
-from langchain_classic.memory import ConversationBufferMemory
-
-
-
-# ======================= 自定义输出解释器 =======================
-class RoleplayOutputParser(BaseOutputParser):
-    """解析AI输出，可提取动作、表情并美化显示"""
-
-    def parse(self, text: str) -> Dict[str, str]:
-        """
-        解析LLM输出，分离出说话内容和动作描述（如果有）
-        简单实现：检查是否包含类似 *动作* 或 （表情） 的标记
-        """
-        # 匹配常见的动作描述模式：*挥手*、[笑]、（开心地）
-        action_pattern = r'[\*\[（]([^*\[（）\]]+)[\*\]）]'
-        actions = re.findall(action_pattern, text)
-
-        # 清理文本：去掉动作标记，保留纯文本
-        clean_text = re.sub(r'[\*\[（][^*\[（）\]]+[\*\]）]', '', text).strip()
-
-        return {
-            "content": clean_text,
-            "actions": actions if actions else None,
-            "raw": text
-        }
-
-    @property
-    def _type(self) -> str:
-        return "roleplay_parser"
-
+# ======================= 自定义输出解释器（动作解析） =======================
+def parse_output(text: str) -> dict:
+    """解析AI输出，提取动作描述并清理文本"""
+    # 匹配 *动作* 或 [动作] 或 （动作）
+    action_pattern = r'[\*\[（]([^*\[（）\]]+)[\*\]）]'
+    actions = re.findall(action_pattern, text)
+    clean_text = re.sub(r'[\*\[（][^*\[（）\]]+[\*\]）]', '', text).strip()
+    return {
+        "content": clean_text,
+        "actions": actions if actions else None,
+        "raw": text
+    }
 
 # ======================= 初始化Streamlit界面 =======================
 st.set_page_config(page_title="角色扮演聊天室", page_icon="🎭")
@@ -50,7 +27,6 @@ with st.sidebar:
                                      help="输入你的DeepSeek API Key（从platform.deepseek.com获取）")
 
     st.header("🎭 角色设定")
-    # 默认提供一个示例角色卡（可莉）
     default_role = """你现在是「可莉」，来自游戏《原神》中的西风骑士团。
 # 性格：充满好奇、活泼天真、喜欢爆炸物和炸鱼。
 # 语言风格：自称“可莉”，说话可爱，常用“哒哒哒”、“蹦蹦炸弹”等。
@@ -64,8 +40,7 @@ with st.sidebar:
 
     if st.button("清除对话历史"):
         st.session_state.messages = []
-        if "memory" in st.session_state:
-            st.session_state.memory.clear()
+        st.session_state.chat_history = []   # 存储对话历史（用于上下文）
         st.rerun()
 
     st.markdown("---")
@@ -73,46 +48,42 @@ with st.sidebar:
 
 # 初始化session状态
 if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "memory" not in st.session_state:
-    # 使用ConversationBufferMemory存储历史
-    st.session_state.memory = ConversationBufferMemory(return_messages=True, memory_key="history")
-if "parser" not in st.session_state:
-    st.session_state.parser = RoleplayOutputParser()
+    st.session_state.messages = []          # 用于界面显示的消息列表
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []      # 用于LLM上下文的对话历史 [{"role": "user", "content": ...}, ...]
 
 # 显示历史对话
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-
-# ======================= 构建Chain（带提示词模板 + 输出解释器） =======================
-def get_roleplay_chain(api_key: str, role_desc: str, memory: ConversationBufferMemory):
-    """创建角色扮演链：提示词模板 -> LLM -> 输出解释器"""
-    # 提示词模板：包含角色设定、对话历史、用户输入
-    prompt = ChatPromptTemplate.from_messages([
-        ("system",
-         "你是一个角色扮演AI。请严格根据下面的角色设定来回答问题，完全融入角色，不要跳出角色。\n"
-         "角色设定如下：\n{role_desc}\n\n"
-         "重要：用第一人称扮演该角色，不要解释自己是AI。保持角色一致性。\n"
-         "如果角色设定中有语言风格要求（如口头禅、自称），请务必遵守。"
-         ),
-        MessagesPlaceholder(variable_name="history"),
-        ("human", "{input}")
-    ])
-
-    # 初始化DeepSeek模型（兼容OpenAI接口）
-    llm = ChatOpenAI(
-        model="deepseek-chat",
-        temperature=0.8,  # 稍高温度让角色更生动
-        openai_api_key=api_key,
-        base_url="https://api.deepseek.com/v1"
+# ======================= 调用DeepSeek API =======================
+def get_ai_response(api_key: str, role_desc: str, history: list, user_input: str) -> str:
+    """发送请求到DeepSeek API，返回AI回复的原始文本"""
+    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com/v1")
+    
+    # 构建系统提示词（角色设定）
+    system_prompt = (
+        "你是一个角色扮演AI。请严格根据下面的角色设定来回答问题，完全融入角色，不要跳出角色。\n"
+        f"角色设定如下：\n{role_desc}\n\n"
+        "重要：用第一人称扮演该角色，不要解释自己是AI。保持角色一致性。\n"
+        "如果角色设定中有语言风格要求（如口头禅、自称），请务必遵守。"
     )
-
-    # 构建链：prompt | llm | 输出解释器
-    chain = prompt | llm | st.session_state.parser
-    return chain
-
+    
+    # 构建消息列表：[system] + 历史对话 + 当前用户输入
+    messages = [
+        {"role": "system", "content": system_prompt}
+    ] + history + [
+        {"role": "user", "content": user_input}
+    ]
+    
+    response = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=messages,
+        temperature=0.8,
+        stream=False
+    )
+    return response.choices[0].message.content
 
 # ======================= 处理用户输入 =======================
 user_input = st.chat_input("说点什么吧...")
@@ -125,44 +96,35 @@ if user_input:
         st.warning("请填写角色形象描述")
         st.stop()
 
-    # 添加用户消息到界面
+    # 添加用户消息到界面和记忆
     st.session_state.messages.append({"role": "user", "content": user_input})
+    st.session_state.chat_history.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # 调用链
+    # 调用AI
     with st.chat_message("assistant"):
         with st.spinner("思考中..."):
             try:
-                # 获取链（每次重新构建以应用最新的角色描述）
-                chain = get_roleplay_chain(deepseek_api_key, role_description, st.session_state.memory)
-
-                # 调用链，传入输入和记忆中的历史
-                # 注意：memory.load_memory_variables({}) 返回包含"history"的字典
-                history = st.session_state.memory.load_memory_variables({})["history"]
-
-                result = chain.invoke({
-                    "role_desc": role_description,
-                    "history": history,
-                    "input": user_input
-                })
-
-                # result 是 RoleplayOutputParser 返回的字典
-                answer_content = result["content"]
-                if result["actions"]:
-                    # 如果有动作描述，额外显示在斜体
-                    action_text = "、".join(result["actions"])
+                # 获取AI原始回复
+                raw_answer = get_ai_response(
+                    deepseek_api_key,
+                    role_description,
+                    st.session_state.chat_history[:-1],  # 去掉最后一条（刚添加的用户输入，因为 get_ai_response 会再加一次）
+                    user_input
+                )
+                # 解析动作和文本
+                parsed = parse_output(raw_answer)
+                answer_content = parsed["content"]
+                if parsed["actions"]:
+                    action_text = "、".join(parsed["actions"])
                     st.caption(f"🎭 {action_text}")
-
                 st.markdown(answer_content)
-
-                # 保存AI回复到记忆和界面
+                
+                # 保存AI回复
                 st.session_state.messages.append({"role": "assistant", "content": answer_content})
-                # 更新memory：保存用户输入和AI输出
-                st.session_state.memory.save_context({"input": user_input}, {"output": answer_content})
-
+                st.session_state.chat_history.append({"role": "assistant", "content": answer_content})
+                
             except Exception as e:
                 st.error(f"出错了：{e}")
                 st.info("请检查API Key是否正确，或稍后重试。")
-
-#  终端运行：streamlit run "D:\Pythonstudy\AI助手\AI2\app.py"

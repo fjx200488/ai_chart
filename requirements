@@ -2,4 +2,3 @@ streamlit>=1.28.0
 langchain>=0.1.0
 langchain-openai>=0.0.5
 langchain-core>=0.1.0
-langchain-classic>=0.0.1   # 可选，若代码中使用了 fallback 导入则需要

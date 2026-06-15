@@ -46,7 +46,9 @@ st.markdown("自定义一个角色，AI会完全代入该角色与你对话！")
 # 侧边栏配置
 with st.sidebar:
     st.header("⚙️ 配置")
-    deepseek_api_key = ""
+    deepseek_api_key = st.text_input("DeepSeek API Key", type="password",
+                                     help="输入你的DeepSeek API Key（从platform.deepseek.com获取）")
+
     st.header("🎭 角色设定")
     # 默认提供一个示例角色卡（可莉）
     default_role = """你现在是「可莉」，来自游戏《原神》中的西风骑士团。
